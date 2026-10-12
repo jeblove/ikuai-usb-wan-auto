@@ -1,0 +1,11 @@
+config.toml
+*.local.toml
+.env
+.env.*
+*.har
+*.log
+*.json
+*.zip
+__pycache__/
+*.py[cod]
+.venv/

@@ -1,0 +1,18 @@
+[Unit]
+Description=iKuai USB WAN Auto
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/ikuai-usb-wan-auto
+ExecStart=/usr/bin/python3 /opt/ikuai-usb-wan-auto/ikuai_usb_wan_auto.py --config /opt/ikuai-usb-wan-auto/config.toml
+Restart=on-failure
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

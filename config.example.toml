@@ -1,0 +1,16 @@
+# Copy to config.toml; keep the file private (chmod 600).
+url = "https://192.168.1.1"
+token = "YOUR_API_TOKEN"
+username = "YOUR_USERNAME"
+password = "YOUR_PASSWORD"
+
+# Target WAN, e.g. wan1, wan2 or wan4
+wan_interface = "wan4"
+usb_interface = "usb0"
+insecure = false
+interval = 3.0
+stable = 3
+cooldown = 60.0
+# Periodic health message (seconds); set 0 to disable
+heartbeat = 3600
+apply = false
