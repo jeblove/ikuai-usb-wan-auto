@@ -71,3 +71,33 @@ python3 -m unittest discover -s tests -v
 - `config.toml` 含凭据且已被 Git 忽略，建议权限设为 `600`。
 - `insecure = true` 会跳过 HTTPS 证书验证。
 - 日志只在状态变化时输出；默认每小时输出一次健康摘要，可设置 `heartbeat = 0` 关闭。
+
+
+## 使用 Web 管理会话自动绑定（不依赖 API Token）
+
+新增 `ikuai_usb_wan_auto_webui.py`。适用于 REST API Token 已撤销但管理员仍允许通过 Web 会话登录的 iKuai 4.x DHCP WAN；复用原项目的 USB 设备校验与完整保存字段保护。
+
+配置文件仅需 `url`、`username`、`password`，以及 `wan_interface = "wan4"`、`usb_interface = "usb0"` 等常规选项；**无需 `token`**。建议将配置文件存放在受控私有目录并设置 `chmod 600`。
+
+首次只读检查：
+
+```bash
+python3 ikuai_usb_wan_auto_webui.py --config /path/to/config.toml --dry-run --once
+```
+
+确认目标是独立的 DHCP WAN、USB 物理网卡确实出现且旧控制服务已经停止后，先准备仅供服务账户读写的私有状态目录（权限 700）：
+
+```bash
+install -d -m 700 /var/lib/ikuai-usb-wan
+# config.toml 中还必须显式配置 apply = true
+python3 ikuai_usb_wan_auto_webui.py --config /path/to/config.toml --apply
+```
+
+**重要限制：**
+
+- 本脚本不会主动控制 PVE USB 透传，也不会自动开启手机上的 USB 网络共享；如果爱快没有发现 `usb0`，它只记录缺失。
+- 默认只读；执行写入同时要求 CLI `--apply` 和配置 `apply = true`。不可与旧的自动绑定实例同时启用。
+- 仅在网卡已被路由器识别为 USB、链路有效、未被其他 WAN 使用、MAC 与指定 WAN 绑定不符等条件同时成立时，才会尝试完整配置保存。
+- 保存前创建私有 `/var/lib/ikuai-usb-wan/unverified` 状态标记；写后回读完全成功才删除。若写入或回读不确定，后续自动写入被阻止，需要人工确认并移除标记，防止重启后盲目重试。
+- 绑定成功不等于 WAN 已获取 DHCP、公网可以访问，更不证明所有游戏 UDP 已按预期分流。
+- 未核实多线负载、默认路由与移动流量策略之前，切勿将自动绑定视为移动流量安全保障。
