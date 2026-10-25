@@ -14,3 +14,9 @@ cooldown = 60.0
 # Periodic health message (seconds); set 0 to disable
 heartbeat = 3600
 apply = false
+
+# Optional MAC prefix allowlist (2-5 complete bytes, case-insensitive).
+# [] = unrestricted: best when the phone randomizes its entire MAC address.
+# When enabled, ONLY the selected USB port (usb0) AND a prefix match can rebind.
+# Example: mac_prefixes = ["02:ab:cd", "a2:bc:de"]
+mac_prefixes = []

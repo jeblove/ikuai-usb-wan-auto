@@ -56,6 +56,67 @@ class TestCandidate(unittest.TestCase):
         self.assertIsNone(mac)
 
 
+
+class TestMacPrefixAllowlist(unittest.TestCase):
+    def test_default_accepts_different_randomized_mac_addresses(self):
+        for mac in ('02:aa:bb:01:02:03', 'de:ad:be:04:05:06', 'a2:11:22:33:44:55'):
+            with self.subTest(mac=mac):
+                observed, reason = app.candidate(
+                    {'usb0': nic(mac=mac)}, wan(), 'usb0', 'wan2')
+                self.assertEqual(observed, mac)
+                self.assertEqual(reason, 'rebind needed')
+
+    def test_prefix_matches_full_octets_and_suffix_can_randomize(self):
+        allowed = app.normalize_mac_prefixes(['02:AA:BB'])
+        for mac in ('02:aa:bb:00:00:01', '02:aa:bb:ff:ee:dd'):
+            self.assertTrue(app.mac_allowed(mac, allowed))
+            actual, _ = app.candidate(
+                {'usb0': nic(mac=mac)}, wan(), 'usb0', 'wan2', allowed)
+            self.assertEqual(actual, mac)
+        self.assertFalse(app.mac_allowed('02:aa:bc:00:00:01', allowed))
+        self.assertFalse(app.mac_allowed('02:aa:bb:01:02:03', ['02:aa:bb:01:04']))
+        self.assertFalse(app.mac_allowed('02:aa:bc:01:02:03', ['02:aa:bb']))
+
+    def test_other_phone_or_other_prefix_rejected(self):
+        mac, reason = app.candidate(
+            {'usb0': nic(mac='a2:bb:cc:01:02:03')},
+            wan(), 'usb0', 'wan2', ['02:bb:cc'])
+        self.assertIsNone(mac)
+        self.assertIn('mac_prefixes', reason)
+
+    def test_multiple_prefixes_are_supported(self):
+        prefixes = app.normalize_mac_prefixes(['02:ab:cd', 'a2:bc:de:ef'])
+        self.assertEqual(len(prefixes), 2)
+        self.assertTrue(app.mac_allowed('a2:bc:de:ef:00:01', prefixes))
+        self.assertTrue(app.mac_allowed('02:ab:cd:00:01:02', prefixes))
+
+    def test_reject_malformed_and_overbroad_prefix_lists(self):
+        for invalid in (
+            '02:aa:bb', ['02'], ['02:'], ['02:a'], ['ZZ:aa'],
+            ['02:aa:bb:cc:dd:ee'], ['02:aa:bb','02:AA:BB'],
+            [3], [None], [True], ['02:ab']*17,
+        ):
+            with self.subTest(value=str(invalid)), self.assertRaises(ValueError):
+                app.normalize_mac_prefixes(invalid)
+
+    def test_empty_allowlist_unrestricted(self):
+        self.assertEqual(app.normalize_mac_prefixes(None), ())
+        self.assertEqual(app.normalize_mac_prefixes([]), ())
+        self.assertTrue(app.mac_allowed('aa:bb:cc:dd:ee:ff', ()))
+        self.assertFalse(app.mac_allowed('not-a-mac', ()))
+
+    def test_other_hardware_guards_still_apply_with_prefixes(self):
+        p = ['02:aa:bb']
+        w = wan()
+        phy = {'usb0': nic(mac='02:aa:bb:00:01:02', interface='wan1')}
+        actual, _ = app.candidate(phy, w, 'usb0', 'wan2', p)
+        self.assertIsNone(actual)
+        phy = {'usb0': nic(mac='02:aa:bb:00:01:02')}
+        phy['eth1']={'mac':'02:aa:bb:00:01:02'}
+        actual, _ = app.candidate(phy, w, 'usb0', 'wan2', p)
+        self.assertIsNone(actual)
+
+
 class TestWanWrite(unittest.TestCase):
     def test_full_save_only_replaces_binding_and_dhcp_state(self):
         w = {k: "" for k in app.BROWSER_SAVE_KEYS}

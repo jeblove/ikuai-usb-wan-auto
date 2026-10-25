@@ -24,7 +24,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from ikuai_usb_wan_auto import candidate, build_save, load_config, log, StatusLogger
+from ikuai_usb_wan_auto import candidate, build_save, load_config, log, StatusLogger, normalize_mac_prefixes
 
 
 class WebUIError(RuntimeError):
@@ -172,8 +172,8 @@ def disarm_write_marker(marker: Path):
     marker.unlink()
 
 
-def classify(physical,wan,*,wan_name,usb_name):
-    mac,reason=candidate(physical,wan,usb_name,wan_name)
+def classify(physical,wan,*,wan_name,usb_name,allowed_mac_prefixes=()):
+    mac,reason=candidate(physical,wan,usb_name,wan_name,allowed_mac_prefixes)
     if not mac:
         return None,reason
     # Require exact target and a complete full-config save, even during dry-run.
@@ -182,7 +182,7 @@ def classify(physical,wan,*,wan_name,usb_name):
 
 
 def poll(client, *, wan_name, usb_name, apply, stable=3, interval=3, cooldown=60,
-         once=False, guard_file:Path|None=None,
+         once=False, guard_file:Path|None=None, allowed_mac_prefixes=(),
          sleeper=time.sleep, clock=time.monotonic):
     if type(stable) is not int or stable<2 or not 1<=interval<=3600 or cooldown<0:
         raise ValueError("poll interval/stability invalid")
@@ -194,7 +194,7 @@ def poll(client, *, wan_name, usb_name, apply, stable=3, interval=3, cooldown=60
     while True:
         try:
             physical,wan=client.read_state(wan_name=wan_name)
-            mac,reason=classify(physical,wan,wan_name=wan_name,usb_name=usb_name)
+            mac,reason=classify(physical,wan,wan_name=wan_name,usb_name=usb_name,allowed_mac_prefixes=allowed_mac_prefixes)
             if mac is None:
                 previous,streak=None,0
                 status.state(("idle",reason),"observed: "+reason)
@@ -212,7 +212,8 @@ def poll(client, *, wan_name, usb_name, apply, stable=3, interval=3, cooldown=60
                     # Re-read immediately before a single targeted save.
                     fresh_physical,fresh_wan=client.read_state(wan_name=wan_name)
                     fresh_mac,_=classify(fresh_physical,fresh_wan,
-                                         wan_name=wan_name,usb_name=usb_name)
+                                         wan_name=wan_name,usb_name=usb_name,
+                                         allowed_mac_prefixes=allowed_mac_prefixes)
                     if fresh_mac!=mac:
                         raise WebUIError("USB state changed during preflight")
                     payload=build_save(fresh_wan,mac,usb_name,wan_name)
@@ -254,6 +255,7 @@ def main(argv=None):
         usb_name=cfg.get("usb_interface","usb0")
         if not isinstance(usb_name,str) or not usb_name.startswith("usb") or not usb_name[3:].isdigit():
             raise ValueError("USB interface must be usbN")
+        allowed_mac_prefixes=normalize_mac_prefixes(cfg.get("mac_prefixes"))
         client=WebUI(cfg)
         log("mode="+("APPLY" if apply else "DRY_RUN")+" WAN="+str(wan_name)+" USB="+usb_name)
         poll(client,wan_name=wan_name,usb_name=usb_name,apply=apply,
@@ -261,7 +263,8 @@ def main(argv=None):
              interval=float(cfg.get("interval",3)),
              cooldown=float(cfg.get("cooldown",60)),
              once=args.once,
-             guard_file=Path("/var/lib/ikuai-usb-wan/unverified") if apply else None)
+             guard_file=Path("/var/lib/ikuai-usb-wan/unverified") if apply else None,
+             allowed_mac_prefixes=allowed_mac_prefixes)
     except (OSError,ValueError,WebUIError,TypeError) as exc:
         p.exit(2,"ERROR: "+type(exc).__name__+"; no verified WAN changes\n")
 

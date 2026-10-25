@@ -193,6 +193,50 @@ class TestWebUIValidation(unittest.TestCase):
             with self.assertRaises(auto.WebUIError):
                 auto.arm_write_marker(directory/"marker")
 
+
+    def test_webui_dry_run_accepts_randomized_suffix_with_allowlist(self):
+        fake=FakeBackend()
+        fake.state['bandif']='dd:ee:ff:11:22:33'
+        out=io.StringIO()
+        with contextlib.redirect_stdout(out):
+            auto.poll(fake,wan_name='wan4',usb_name='usb0',
+                      apply=False,once=True,allowed_mac_prefixes=('22:33:44',))
+        self.assertIn('DRY_RUN',out.getvalue())
+        self.assertEqual(fake.save_calls,0)
+
+    def test_webui_rejects_nonmatching_mac_even_if_apply(self):
+        fake=FakeBackend()
+        auto.poll(fake,wan_name='wan4',usb_name='usb0',
+                  apply=True,once=True,allowed_mac_prefixes=('02:ab:cd',))
+        self.assertEqual(fake.save_calls,0)
+        self.assertEqual(fake.read_calls,1)
+
+    def test_webui_prefix_eligible_writes_only_after_stable_observations(self):
+        fake=FakeBackend()
+        ticks=[0]
+        def stop(_):
+            ticks[0]+=1
+            if ticks[0]>=3:
+                raise StopIteration()
+        with self.assertRaises(StopIteration):
+            auto.poll(fake,wan_name='wan4',usb_name='usb0',
+                      apply=True,stable=2,sleeper=stop,
+                      allowed_mac_prefixes=('22:33:44',))
+        self.assertEqual(fake.save_calls,1)
+        self.assertEqual(fake.state['bandif'],'22:33:44:55:66:77')
+
+    def test_main_rejects_invalid_prefix_before_login(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p=Path(tmp)/'config.toml'
+            p.write_text('url="https://localhost"\nusername="u"\npassword="p"\n'
+                         'apply=true\nmac_prefixes=["02:qq"]\n')
+            p.chmod(0o600)
+            with patch.object(auto,'WebUI') as client:
+                with self.assertRaises(SystemExit) as ex:
+                    auto.main(['--config',str(p),'--once'])
+                self.assertEqual(ex.exception.code,2)
+                client.assert_not_called()
+
     def test_cli_apply_refused_when_config_is_dry(self):
         with tempfile.TemporaryDirectory() as tmp:
             p=Path(tmp)/"config.toml"

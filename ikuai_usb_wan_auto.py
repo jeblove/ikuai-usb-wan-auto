@@ -22,6 +22,42 @@ import urllib.request
 from pathlib import Path
 
 MAC_RE = re.compile(r'^[0-9a-f]{2}(?::[0-9a-f]{2}){5}$')
+
+# A MAC prefix is an OPTIONAL device allowlist, not a fixed binding.
+# An Android device can randomize its full MAC (including its OUI/prefix),
+# so the default is unrestricted USB-interface identity, never a pinned MAC.
+MAC_PREFIX_RE = re.compile(r'^[0-9a-f]{2}(?::[0-9a-f]{2}){1,4}$')
+
+
+def normalize_mac_prefixes(prefixes):
+    """Validate optional 2-5 complete-octet prefixes; [] permits any MAC.
+
+    Reject string (rather than list), partial hex bytes, duplicates, and
+    overbroad or malformed values instead of silently disabling the filter.
+    """
+    if prefixes is None:
+        return ()
+    if not isinstance(prefixes, (list, tuple)) or len(prefixes) > 16:
+        raise ValueError('mac_prefixes must be a list with at most 16 entries')
+    result = []
+    for prefix in prefixes:
+        if not isinstance(prefix, str) or not MAC_PREFIX_RE.fullmatch(prefix.lower()):
+            raise ValueError('each mac_prefixes entry must be 2-5 complete hex octets, e.g. 02:ab:cd')
+        normalized = prefix.lower()
+        if normalized in result:
+            raise ValueError('duplicate mac_prefixes entry')
+        result.append(normalized)
+    return tuple(result)
+
+
+def mac_allowed(mac, prefixes):
+    """Compare on octet boundary, not string-character prefix."""
+    prefixes = normalize_mac_prefixes(prefixes)
+    mac = str(mac).lower()
+    return bool(MAC_RE.fullmatch(mac)) and (
+        not prefixes or any(mac.startswith(p + ':') for p in prefixes)
+    )
+
 # Keys present in the observed browser save. Avoid inadvertently sending API-only keys.
 BROWSER_SAVE_KEYS = '''tagname ass_check_errip_list ass_check_errip_switch ass_disc_rst_switch ass_multi_total ass_rst_check_interval ass_rst_check_time ass_rst_check_week ass_rst_disc_norestart ass_rst_disc_num bandeth bandif bandlist_5g bandmode check_link_host check_link_mode clientid comment cycle_rst_time default_route dhcp_dns1 dhcp_dns2 dhcp_gateway dhcp_ip_addr dhcp_lease dhcp_netmask dhcp_status dhcp_updatetime disc_auto_switch download duplex enable_ipv6 gateway hostname id internet ip_mask link_time linkmode lte_antenna_switch lte_apn lte_dialnum lte_mode lte_pincode lte_service mac modified_time mru mtu name opt_type12 opt_type60 opt_type61 passwd policy pppoe_ac pppoe_ass_switch pppoe_check_errip_list pppoe_check_errip_switch pppoe_dns1 pppoe_dns2 pppoe_gateway pppoe_ip_addr pppoe_macremote pppoe_netmask pppoe_service pppoe_status pppoe_updatetime qos_download qos_switch qos_upload sim_switch speed timing_rst_switch timing_rst_time timing_rst_week upload username vendorclass wifi_bssid wifi_psk wifi_ssid wifi_wisp'''.split()
 DHCP_EMPTY = ('dhcp_dns1','dhcp_dns2','dhcp_gateway','dhcp_ip_addr','dhcp_netmask')
@@ -92,7 +128,7 @@ def read_state(args):
     return physical, matches[0]
 
 
-def candidate(physical, wan, usb_interface, wan_interface):
+def candidate(physical, wan, usb_interface, wan_interface, allowed_mac_prefixes=()):
     if wan.get('linkmode') != 0 or wan.get('bandeth') != usb_interface:
         return None, f'{wan_interface} is not configured for {usb_interface} in DHCP mode; refusing'
     usb = physical.get(usb_interface)
@@ -104,6 +140,8 @@ def candidate(physical, wan, usb_interface, wan_interface):
     if usb.get('interface') not in ('Null', wan_interface):
         return None, f'{usb_interface} is assigned to another interface'
     mac = usb['mac'].lower()
+    if not mac_allowed(mac, allowed_mac_prefixes):
+        return None, 'USB MAC does not match configured mac_prefixes'
     if any(k != usb_interface and isinstance(v,dict) and str(v.get('mac','')).lower() == mac
            for k,v in physical.items()):
         return None, 'duplicate MAC detected'
@@ -206,7 +244,8 @@ def load_config(path):
     if not isinstance(cfg, dict):
         raise RuntimeError('Invalid config')
     allowed = {'url', 'token', 'username', 'password', 'cookie', 'insecure',
-               'interval', 'stable', 'cooldown', 'apply', 'usb_interface', 'wan_interface', 'heartbeat'}
+               'interval', 'stable', 'cooldown', 'apply', 'usb_interface', 'wan_interface', 'heartbeat',
+               'mac_prefixes'}
     extra = set(cfg) - allowed
     if extra:
         raise RuntimeError('Unknown config keys: ' + ', '.join(sorted(extra)))
@@ -273,6 +312,10 @@ def main():
         parser.error('insecure/apply must be TOML booleans true or false')
     if args.dry_run or args.auth_test_only:
         args.apply = False
+    try:
+        args.mac_prefixes = normalize_mac_prefixes(cfg.get('mac_prefixes'))
+    except ValueError as exc:
+        parser.error(str(exc))
     args.cookie_supplied = bool(args.cookie)
     args.jar = http.cookiejar.CookieJar()
     ctx = ssl._create_unverified_context() if args.insecure else ssl.create_default_context()
@@ -307,7 +350,7 @@ def main():
     while True:
         try:
             physical, wan = read_state(args)
-            mac, reason = candidate(physical, wan, args.usb_interface, args.wan_interface)
+            mac, reason = candidate(physical, wan, args.usb_interface, args.wan_interface, args.mac_prefixes)
             if not mac:
                 previous_mac, streak = None, 0
                 status.state(('idle', reason), reason)
@@ -326,7 +369,7 @@ def main():
                         log('DRY RUN: would call wan/save; no changes made')
                     else:
                         fresh_physical, fresh_wan = read_state(args)
-                        fresh_mac, fresh_reason = candidate(fresh_physical, fresh_wan, args.usb_interface, args.wan_interface)
+                        fresh_mac, fresh_reason = candidate(fresh_physical, fresh_wan, args.usb_interface, args.wan_interface, args.mac_prefixes)
                         if fresh_mac != mac:
                             raise RuntimeError('state changed before write: ' + fresh_reason)
                         payload = build_save(fresh_wan, mac, args.usb_interface, args.wan_interface)
